@@ -61,12 +61,11 @@ Your project is mounted at:  $HERE
 
 Build (cross-compiles to x86_64 automatically) and test in QEMU — no USB needed:
   cd $HERE
-  export WORK=\$HOME/build   # build on the VM's native disk; the macOS mount is
-                             # slow and makes tar fail with "Permission denied"
   ./01-busybox.sh && ./02-kernel.sh && ./03-rootfs.sh
-  ( cd work/rootfs && find . | cpio -o -H newc | gzip -9 ) > work/out/initramfs.cpio.gz
+  # builds land in \$HOME/build (VM native disk); override with WORK=... if needed
+  ( cd \$HOME/build/rootfs && find . | cpio -o -H newc | gzip -9 ) > \$HOME/build/out/initramfs.cpio.gz
   qemu-system-x86_64 -m 256 -nographic \\
-    -kernel work/out/bzImage -initrd work/out/initramfs.cpio.gz -append console=ttyS0
+    -kernel \$HOME/build/out/bzImage -initrd \$HOME/build/out/initramfs.cpio.gz -append console=ttyS0
   #   Ctrl-a x  quits qemu
 
 NOTE: writing a physical stick (04-usb.sh) uses x86-only bootloaders

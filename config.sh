@@ -9,7 +9,10 @@ KERNEL_VER="${KERNEL_VER:-6.6.30}"
 KERNEL_MAJOR="${KERNEL_MAJOR:-6}"      # v6.x on kernel.org
 
 # --- layout ------------------------------------------------------------------
-WORK="${WORK:-$PWD/work}"
+# Default off the project dir: on a Lima VM that dir is a slow macOS mount where
+# tar fails with "Permission denied". $HOME is the VM's native disk. ponytail: a
+# native x86_64 host builds here just as happily.
+WORK="${WORK:-$HOME/build}"
 SRC="$WORK/src"                        # downloaded + extracted sources
 ROOTFS="$WORK/rootfs"                  # the system we are building
 OUT="$WORK/out"                        # bzImage + initramfs land here
