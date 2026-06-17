@@ -1,0 +1,8 @@
+# Build output (regenerable: re-downloads sources, recompiles).
+# Default location ($PWD/work) and any custom $WORK like ~/build.
+work/
+build/
+
+# Stray artifacts if a script is ever run from here.
+*.cpio.gz
+bzImage
