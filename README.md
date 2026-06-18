@@ -36,7 +36,39 @@ setup-lima.sh    macOS only: spin up a Linux VM with deps + this folder mounted
 01-busybox.sh    download + build static BusyBox  -> work/rootfs
 02-kernel.sh     download + build kernel          -> work/out/bzImage
 03-rootfs.sh     init + inittab + device nodes    -> work/rootfs
-04-usb.sh        partition + bootloader + copy     -> your USB stick
+04-apps.sh       optional apps (AUDIO/NET=1)       -> work/rootfs
+last-usb.sh      partition + bootloader + copy     -> your USB stick
+```
+
+## Optional features
+
+The basic build is networkless and silent. Two toggles (set on every step that
+uses them) add more:
+
+| Toggle | Kernel (02) | Init (03) | Apps (04) |
+|--------|-------------|-----------|-----------|
+| `NET=1`   | TCP/IP + ethernet & wifi drivers | DHCP on wired NICs at boot | `wpa_supplicant` + wifi firmware |
+| `AUDIO=1` | ALSA + common sound drivers | `alsactl init` (unmute) at boot | `aplay` / `amixer` / `alsactl` (alsa-utils) |
+
+```sh
+NET=1 AUDIO=1 ./02-kernel.sh
+NET=1 AUDIO=1 ./03-rootfs.sh
+NET=1 AUDIO=1 ./04-apps.sh        # static-cross-builds the userspace tools + firmware
+```
+
+Wired ethernet is fully automatic (BusyBox `udhcpc`). Sound: drivers auto-probe
+and `04-apps.sh` installs the ALSA tools — `aplay -l` lists cards, `aplay
+file.wav` plays.
+
+Wifi firmware is bundled by `04-apps.sh`. By default it fetches **iwlwifi**
+(Intel — the common laptop/mini-PC card; ath9k PCIe needs none) via a sparse
+`linux-firmware` checkout, so only the listed blobs download, not the ~2 GB
+tree. Add families with `FW_LIST` (e.g. `FW_LIST='/iwlwifi-* /rtw88/*'`), or
+point `FW_DIR` at a local firmware tree to skip the download. Then on the target:
+
+```sh
+wpa_passphrase SSID pass >> /etc/wpa_supplicant.conf
+wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf && udhcpc -i wlan0
 ```
 
 ## Requirements
@@ -45,7 +77,7 @@ Runs on **Linux** (Debian/Ubuntu package names shown):
 
 ```
 sudo apt install build-essential bc bison flex libelf-dev libssl-dev \
-                 wget xz-utils cpio \
+                 wget xz-utils cpio git pkg-config \
                  syslinux extlinux dosfstools e2fsprogs
 ```
 
@@ -85,7 +117,7 @@ result in QEMU — no physical USB needed (see below).
 > build is hopeless. Native arm64 + cross-compile is the fast, reliable path.
 >
 > **Writing the real USB stick:** step 4 needs the x86-only bootloader tools,
-> which don't exist on arm64. Build + test on your Mac, then run `04-usb.sh` on
+> which don't exist on arm64. Build + test on your Mac, then run `last-usb.sh` on
 > an x86_64 Linux box (a cheap mini-PC, an old laptop, or a cloud x86 instance
 > with the stick attached) to flash the actual drive.
 
@@ -97,20 +129,21 @@ cd scratch-linux
 ./01-busybox.sh          # a few minutes
 ./02-kernel.sh           # the long one (downloads ~140 MB, compiles)
 ./03-rootfs.sh           # instant; prompts sudo for mknod
+# ./04-apps.sh           # only if AUDIO=1 / NET=1 — see "Optional features" above
 
 # --- pick a firmware + mode combination ---
 
-USB_DEV=/dev/sdX FIRMWARE=bios MODE=initramfs  ./04-usb.sh   # legacy, RAM root
-USB_DEV=/dev/sdX FIRMWARE=bios MODE=persistent ./04-usb.sh   # legacy, disk root
-USB_DEV=/dev/sdX FIRMWARE=uefi MODE=initramfs  ./04-usb.sh   # UEFI,   RAM root
-USB_DEV=/dev/sdX FIRMWARE=uefi MODE=persistent ./04-usb.sh   # UEFI,   disk root
+USB_DEV=/dev/sdX FIRMWARE=bios MODE=initramfs  ./last-usb.sh   # legacy, RAM root
+USB_DEV=/dev/sdX FIRMWARE=bios MODE=persistent ./last-usb.sh   # legacy, disk root
+USB_DEV=/dev/sdX FIRMWARE=uefi MODE=initramfs  ./last-usb.sh   # UEFI,   RAM root
+USB_DEV=/dev/sdX FIRMWARE=uefi MODE=persistent ./last-usb.sh   # UEFI,   disk root
 ```
 
-Defaults are `FIRMWARE=bios MODE=initramfs`, so a bare `USB_DEV=/dev/sdX ./04-usb.sh`
+Defaults are `FIRMWARE=bios MODE=initramfs`, so a bare `USB_DEV=/dev/sdX ./last-usb.sh`
 gives a legacy-BIOS RAM stick. For UEFI, also disable Secure Boot on the target.
 
 Find `/dev/sdX` with `lsblk` **before** plugging the stick and again after — the
-new device is yours. `04-usb.sh` erases it and makes you type `ERASE` to confirm.
+new device is yours. `last-usb.sh` erases it and makes you type `ERASE` to confirm.
 
 ## Test in QEMU (no USB needed)
 
@@ -123,7 +156,7 @@ qemu-system-x86_64 -m 256 -nographic \
   -append "console=ttyS0"
 ```
 
-(`initramfs.cpio.gz` is produced by `04-usb.sh`; to make it without touching a
+(`initramfs.cpio.gz` is produced by `last-usb.sh`; to make it without touching a
 USB, run: `( cd work/rootfs && find . | cpio -o -H newc | gzip -9 ) > work/out/initramfs.cpio.gz`.)
 
 You should land at a `#` prompt. `Ctrl-a x` quits QEMU.

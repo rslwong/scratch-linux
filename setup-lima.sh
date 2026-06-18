@@ -14,7 +14,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # build tools (native) + the x86_64 cross-compiler + static cross libc +
 # qemu/ovmf for testing the x86 image + fs tools for making disk images.
 PKGS="build-essential bc bison flex libelf-dev libssl-dev \
-wget xz-utils cpio \
+wget xz-utils cpio git pkg-config \
 gcc-x86-64-linux-gnu libc6-dev-amd64-cross \
 qemu-system-x86 ovmf \
 dosfstools e2fsprogs"
@@ -63,12 +63,14 @@ Build (cross-compiles to x86_64 automatically) and test in QEMU — no USB neede
   cd $HERE
   ./01-busybox.sh && ./02-kernel.sh && ./03-rootfs.sh
   # builds land in \$HOME/build (VM native disk); override with WORK=... if needed
+  # enhanced build (ethernet+wifi+audio):  NET=1 AUDIO=1 ./02-kernel.sh && NET=1 ./03-rootfs.sh
+  #   QEMU's default NIC gives the NET=1 image a DHCP lease automatically
   ( cd \$HOME/build/rootfs && find . | cpio -o -H newc | gzip -9 ) > \$HOME/build/out/initramfs.cpio.gz
   qemu-system-x86_64 -m 256 -nographic \\
     -kernel \$HOME/build/out/bzImage -initrd \$HOME/build/out/initramfs.cpio.gz -append console=ttyS0
   #   Ctrl-a x  quits qemu
 
-NOTE: writing a physical stick (04-usb.sh) uses x86-only bootloaders
+NOTE: writing a physical stick (last-usb.sh) uses x86-only bootloaders
 (syslinux/extlinux/grub-efi-amd64) that aren't available on arm64. Build + test
-here, then run 04-usb.sh on an x86_64 Linux machine to write the actual USB.
+here, then run last-usb.sh on an x86_64 Linux machine to write the actual USB.
 EOF

@@ -31,6 +31,17 @@ fi
 CROSS_COMPILE="${CROSS_COMPILE:-}"
 export ARCH CROSS_COMPILE
 
+# --- optional features -------------------------------------------------------
+# Basic build is networkless and silent. Flip these to 1 for the enhanced build;
+# they gate kernel drivers (02) and the rootfs init (03), so set them on both:
+#   NET=1    TCP/IP stack + ethernet & wifi drivers; init runs DHCP on wired NICs
+#   AUDIO=1  ALSA + common sound drivers (HD-audio, USB, QEMU ac97)
+# e.g.  NET=1 AUDIO=1 ./02-kernel.sh && NET=1 ./03-rootfs.sh
+# Wifi drivers are built in, but associating needs firmware blobs + wpa_supplicant
+# (not in BusyBox); audio nodes appear under /dev/snd but BusyBox ships no aplay.
+NET="${NET:-0}"
+AUDIO="${AUDIO:-0}"
+
 # --- target ------------------------------------------------------------------
 # Boot style: "initramfs" (whole system in RAM, read-only) or
 #             "persistent" (real ext4 root on the stick, changes survive).
@@ -40,7 +51,7 @@ MODE="${MODE:-initramfs}"
 #                                 "uefi" (GPT + GRUB on an EFI System Partition).
 FIRMWARE="${FIRMWARE:-bios}"
 
-# USB block device for 04-usb.sh, e.g. /dev/sdb. Empty on purpose so nobody
+# USB block device for last-usb.sh, e.g. /dev/sdb. Empty on purpose so nobody
 # wipes a disk by accident — you set it explicitly when you run step 4.
 USB_DEV="${USB_DEV:-}"
 

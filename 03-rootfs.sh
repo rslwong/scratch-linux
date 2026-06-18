@@ -35,6 +35,42 @@ echo
 echo "scratch-linux ready  ($(busybox | sed -n 1p))"
 echo
 EOF
+# Audio (AUDIO=1 build): unmute/init the card at boot so it's usable straight
+# away. alsactl comes from alsa-utils (04-apps.sh); harmless no-op without it.
+if [ "$AUDIO" = 1 ]; then
+  cat >> etc/init.d/rcS <<'EOF'
+command -v alsactl >/dev/null && alsactl init >/dev/null 2>&1
+EOF
+fi
+
+# Networking (NET=1 build): bring up wired links and grab a DHCP lease. wlan
+# links come up too but won't associate without firmware + wpa_supplicant.
+if [ "$NET" = 1 ]; then
+  cat >> etc/init.d/rcS <<'EOF'
+ifconfig lo 127.0.0.1 up 2>/dev/null
+for d in $(ls /sys/class/net 2>/dev/null); do
+  [ "$d" = lo ] && continue
+  ip link set "$d" up 2>/dev/null
+  case "$d" in eth*|en*) udhcpc -i "$d" -b -t 5 2>/dev/null ;; esac
+done
+EOF
+  # udhcpc shells out to this hook to actually apply the lease it receives.
+  mkdir -p usr/share/udhcpc
+  cat > usr/share/udhcpc/default.script <<'EOF'
+#!/bin/sh
+case "$1" in
+  deconfig) ifconfig "$interface" 0.0.0.0 ;;
+  bound|renew)
+    ifconfig "$interface" "$ip" netmask "${subnet:-255.255.255.0}"
+    [ -n "$router" ] && { ip route del default 2>/dev/null; ip route add default via "$router"; }
+    : > /etc/resolv.conf
+    for s in $dns; do echo "nameserver $s" >> /etc/resolv.conf; done
+    ;;
+esac
+EOF
+  chmod +x usr/share/udhcpc/default.script
+fi
+
 chmod +x etc/init.d/rcS
 
 # /dev/console + /dev/null must exist before devtmpfs mounts (initramfs case).

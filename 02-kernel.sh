@@ -23,6 +23,27 @@ scripts/config \
   --enable USB --enable USB_XHCI_HCD --enable USB_EHCI_HCD \
   --enable USB_STORAGE \
   --enable USB_HID --enable HID_GENERIC
+
+# Optional features (config.sh toggles). Built IN, like everything else — this
+# system has no module loader. Drivers cover QEMU and common real hardware.
+if [ "$NET" = 1 ]; then
+  scripts/config \
+    --enable NET --enable INET --enable PACKET --enable UNIX \
+    --enable NETDEVICES --enable ETHERNET \
+    --enable NET_VENDOR_INTEL  --enable E1000 --enable E1000E --enable IGB \
+    --enable NET_VENDOR_REALTEK --enable R8169 \
+    --enable VIRTIO_NET \
+    --enable WLAN --enable CFG80211 --enable CFG80211_WEXT --enable MAC80211 \
+    --enable WLAN_VENDOR_INTEL --enable IWLWIFI --enable IWLMVM \
+    --enable WLAN_VENDOR_ATH --enable ATH9K
+fi
+if [ "$AUDIO" = 1 ]; then
+  scripts/config \
+    --enable SOUND --enable SND --enable SND_PCM \
+    --enable SND_HDA_INTEL --enable SND_HDA_CODEC_REALTEK --enable SND_HDA_CODEC_HDMI \
+    --enable SND_USB_AUDIO \
+    --enable SND_INTEL8X0      # QEMU's default ac97
+fi
 make olddefconfig
 
 make -j"$JOBS" bzImage
