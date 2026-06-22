@@ -44,6 +44,15 @@ if [ "$AUDIO" = 1 ]; then
     make -j"$JOBS"
     make install DESTDIR="$ROOTFS" )
 
+  # libtool .la sysroot fixup: the .la files were generated with prefix=/usr but
+  # live under DESTDIR=$ROOTFS, so their absolute paths (libdir + the inter-lib
+  # dependency_libs reference, e.g. libatopology.la -> /usr/lib/libasound.la)
+  # point at the host root and libtool can't find them when linking alsa-utils.
+  # Rewrite those /usr/lib paths to the rootfs so libtool resolves them.
+  sed -i -e "s| /usr/lib/| $ROOTFS/usr/lib/|g" \
+         -e "s|^libdir='/usr/lib'|libdir='$ROOTFS/usr/lib'|" \
+         "$ROOTFS"/usr/lib/libasound.la "$ROOTFS"/usr/lib/libatopology.la
+
   # alsa-utils linked statically against that libasound.a. Drop alsamixer (needs
   # ncurses) and nls (needs gettext) so there's nothing else to cross-build.
   fetch "https://www.alsa-project.org/files/pub/utils/alsa-utils-$AV.tar.bz2" "alsa-utils-$AV.tar.bz2"
@@ -54,7 +63,12 @@ if [ "$AUDIO" = 1 ]; then
       --with-alsa-prefix="$ROOTFS/usr/lib" --with-alsa-inc-prefix="$ROOTFS/usr/include" \
       --disable-alsamixer --disable-nls --disable-bat --disable-xmlto --disable-rst2man \
       CC="$CC" LDFLAGS=-static
-    make -j"$JOBS"
+    # -all-static (a libtool flag, not gcc's) at link time forces a fully static
+    # binary INCLUDING libc. Plain -static is consumed by libtool to mean "use
+    # static libtool libs" and dropped from the gcc command, leaving libc linked
+    # dynamically — which assert_static below would (correctly) reject. We keep
+    # -static for configure's raw gcc feature tests (gcc rejects -all-static).
+    make LDFLAGS=-all-static -j"$JOBS"
     make install DESTDIR="$ROOTFS" )
 
   # Strip the build-only bits we just dragged into the target (it runs static
@@ -84,15 +98,138 @@ EOF
     cp wpa_supplicant wpa_cli wpa_passphrase "$ROOTFS/usr/sbin/" )
   for b in wpa_supplicant wpa_cli wpa_passphrase; do assert_static "$ROOTFS/usr/sbin/$b"; done
 
-  # Starter config (no secrets baked in). Fill in on the target, or regenerate:
-  #   wpa_passphrase MYSSID 'pass' >> /etc/wpa_supplicant.conf
+  # Starter config (no secrets baked in). Fill in on the target, or just run the
+  # `wifi-connect` helper below. update_config=1 lets wpa_cli/wifi-connect write
+  # a chosen network back here so it persists across reboots.
   [ -f "$ROOTFS/etc/wpa_supplicant.conf" ] || cat > "$ROOTFS/etc/wpa_supplicant.conf" <<'EOF'
 ctrl_interface=/var/run/wpa_supplicant
+update_config=1
 # network={
 #     ssid="MYSSID"
 #     psk="mypassword"
 # }
 EOF
+
+  # wifi-connect: guided setup driven entirely by the static tools above
+  # (wpa_supplicant/wpa_cli/udhcpc) — the lightweight stand-in for nmtui, with
+  # no NetworkManager/D-Bus/glib to cross-build. Scans, shows a numbered menu,
+  # prompts for the passphrase, associates, persists, and pulls a DHCP lease.
+  mkdir -p "$ROOTFS/usr/sbin"
+  cat > "$ROOTFS/usr/sbin/wifi-connect" <<'WIFI_CONNECT'
+#!/bin/sh
+# wifi-connect [interface]  (default: wlan0)
+# Guided wifi setup for this static rootfs: bring the interface up, scan, pick
+# an SSID from a menu, enter the passphrase, associate, and get an IP — using
+# only wpa_supplicant/wpa_cli/udhcpc (no NetworkManager/nmtui needed).
+set -u
+
+IF="${1:-wlan0}"
+CONF=/etc/wpa_supplicant.conf
+CTRL=/var/run/wpa_supplicant
+
+die()  { echo "wifi-connect: $*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+[ "$(id -u)" = 0 ] || die "must be run as root"
+have wpa_supplicant || die "wpa_supplicant not found"
+have wpa_cli        || die "wpa_cli not found"
+have udhcpc         || die "udhcpc not found"
+
+# Bring the interface up (busybox ip, falling back to ifconfig).
+if have ip; then ip link set "$IF" up 2>/dev/null
+else ifconfig "$IF" up 2>/dev/null; fi || die "no such interface: $IF"
+
+# Ensure a control-capable wpa_supplicant is running on $IF.
+if ! wpa_cli -i "$IF" -p "$CTRL" ping 2>/dev/null | grep -q PONG; then
+  echo "Starting wpa_supplicant on $IF ..."
+  [ -f "$CONF" ] || die "missing $CONF"
+  wpa_supplicant -B -i "$IF" -c "$CONF" \
+    || die "failed to start wpa_supplicant (check $CONF and the driver/firmware)"
+  sleep 1
+fi
+
+echo "Scanning on $IF ..."
+wpa_cli -i "$IF" -p "$CTRL" scan >/dev/null 2>&1
+sleep 3
+
+# De-duplicated, numbered list of visible SSIDs (+ open/secured from the flags).
+tmp=$(mktemp 2>/dev/null || echo "/tmp/wifi.$$")
+wpa_cli -i "$IF" -p "$CTRL" scan_results 2>/dev/null \
+  | awk -F'\t' 'NR>1 && $5!="" {
+        sec = ($4 ~ /WPA|RSN|WEP/) ? "secured" : "open"
+        if (!seen[$5]++) printf "%s\t%s\n", $5, sec
+    }' > "$tmp"
+[ -s "$tmp" ] || { rm -f "$tmp"; die "no networks found (retry, or check firmware/driver)"; }
+
+echo
+echo "Available networks:"
+i=0
+while IFS="$(printf '\t')" read -r ssid sec; do
+  i=$((i + 1))
+  printf "  %2d) %-32s [%s]\n" "$i" "$ssid" "$sec"
+done < "$tmp"
+echo
+
+printf "Select a network [1-%d]: " "$i"
+read -r n
+case "$n" in ''|*[!0-9]*) rm -f "$tmp"; die "invalid selection";; esac
+{ [ "$n" -ge 1 ] && [ "$n" -le "$i" ]; } || { rm -f "$tmp"; die "selection out of range"; }
+
+sel=$(sed -n "${n}p" "$tmp")
+SSID=$(printf '%s' "$sel" | cut -f1)
+SEC=$(printf '%s' "$sel" | cut -f2)
+rm -f "$tmp"
+echo "Selected: $SSID ($SEC)"
+
+# Configure the chosen network through the control interface.
+ID=$(wpa_cli -i "$IF" -p "$CTRL" add_network | tail -n1)
+case "$ID" in ''|*[!0-9]*) die "add_network failed";; esac
+
+set_net() {  # key  value (already quoted if it must be a quoted string)
+  out=$(wpa_cli -i "$IF" -p "$CTRL" set_network "$ID" "$1" "$2")
+  echo "$out" | grep -q OK || die "set_network $1 failed: $out"
+}
+
+# wpa_cli expects ssid/psk string values wrapped in literal double quotes.
+set_net ssid "\"$SSID\""
+if [ "$SEC" = open ]; then
+  set_net key_mgmt NONE
+else
+  stty -echo 2>/dev/null
+  printf "Passphrase for %s: " "$SSID"; read -r PSK; echo
+  stty echo 2>/dev/null
+  [ -n "$PSK" ] || die "empty passphrase"
+  set_net psk "\"$PSK\""
+fi
+
+wpa_cli -i "$IF" -p "$CTRL" enable_network "$ID" >/dev/null
+wpa_cli -i "$IF" -p "$CTRL" select_network "$ID" >/dev/null
+
+printf "Associating"
+state=""
+t=0
+while [ "$t" -lt 15 ]; do
+  state=$(wpa_cli -i "$IF" -p "$CTRL" status 2>/dev/null | sed -n 's/^wpa_state=//p')
+  [ "$state" = COMPLETED ] && break
+  printf "."; sleep 1; t=$((t + 1))
+done
+echo
+[ "$state" = COMPLETED ] || die "association failed (wrong passphrase or out of range)"
+
+# Persist for next boot when the config allows it (update_config=1).
+if grep -q '^update_config=1' "$CONF" 2>/dev/null; then
+  wpa_cli -i "$IF" -p "$CTRL" save_config >/dev/null 2>&1 \
+    && echo "Saved network to $CONF"
+fi
+
+echo "Requesting DHCP lease ..."
+udhcpc -i "$IF" -n -q || die "DHCP failed (associated, but no lease)"
+
+echo "Connected on $IF."
+if have ip; then ip -4 addr show "$IF" | sed -n 's/.*inet \([0-9.]*\).*/  IP: \1/p'
+else ifconfig "$IF" | sed -n 's/.*inet addr:\([0-9.]*\).*/  IP: \1/p'; fi
+WIFI_CONNECT
+  chmod +x "$ROOTFS/usr/sbin/wifi-connect"
 
   # Firmware. Most wifi chips load a blob at probe time or they don't appear at
   # all. We bundle the blobs for the drivers built into the kernel (02). Default
@@ -120,7 +257,9 @@ EOF
     echo "wifi  -> wpa_supplicant installed; firmware bundled ($FW_LIST)"
   fi
   cat <<'EOF'
-        Connect on the target (wlan0 brought up at boot; associate + DHCP):
+        Connect on the target — guided (scan, pick, passphrase, DHCP):
+          wifi-connect              # or: wifi-connect wlan1
+        ...or by hand:
           wpa_passphrase MYSSID 'pass' >> /etc/wpa_supplicant.conf
           wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf
           udhcpc -i wlan0
